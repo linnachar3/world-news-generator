@@ -1,0 +1,7 @@
+{
+    "name": "World News Generator",
+    "description": "基于世界书生成背景新闻和论坛八卦",
+    "version": "1.0.0",
+    "author": "linnar",
+    "main": "index.js"
+}
