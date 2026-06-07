@@ -1,8 +1,8 @@
 {
-    "name": "world-news-generator",
-    "display_name": "World News Generator",
-    "description": "基于世界书生成背景新闻和论坛八卦",
+    "display_name": "信息中心 · 小报童",
+    "js": "main.js",
+    "css": "style.css",
+    "author": "kitten",
     "version": "1.0.0",
-    "author": "YourName",
-    "main": "index.js"
+    "description": "悬浮报纸图标，点击生成世界观新闻、本地动态与角色社媒"
 }
