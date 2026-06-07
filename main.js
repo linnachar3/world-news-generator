@@ -688,8 +688,11 @@ window.addEventListener('touchend', onTitleEnd);
     const ball = document.getElementById('my-floating-ball');
     if (!ball) return;
 
+    let hasMoved = false; // 标记本次触摸是否移动过
+
     const onStart = (e) => {
         isDragging = true;
+        hasMoved = false;
         const clientX = e.touches ? e.touches[0].clientX : e.clientX;
         const clientY = e.touches ? e.touches[0].clientY : e.clientY;
         const rect = ball.getBoundingClientRect();
@@ -705,6 +708,11 @@ window.addEventListener('touchend', onTitleEnd);
         if (!isDragging) return;
         const clientX = e.touches ? e.touches[0].clientX : e.clientX;
         const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        const dx = clientX - startX;
+        const dy = clientY - startY;
+        if (Math.abs(dx) > clickThreshold || Math.abs(dy) > clickThreshold) {
+            hasMoved = true;
+        }
         let left = clientX - dragOffsetX;
         let top = clientY - dragOffsetY;
         left = Math.min(Math.max(0, left), window.innerWidth - ball.offsetWidth);
@@ -714,9 +722,13 @@ window.addEventListener('touchend', onTitleEnd);
         e.preventDefault();
     };
 
-    const onEnd = () => {
+    const onEnd = (e) => {
         isDragging = false;
         ball.style.cursor = 'grab';
+        // 触摸结束且未移动：视为轻击
+        if (e.type === 'touchend' && !hasMoved) {
+            toggleModal();
+        }
     };
 
     ball.addEventListener('mousedown', onStart);
@@ -726,10 +738,10 @@ window.addEventListener('touchend', onTitleEnd);
     window.addEventListener('mouseup', onEnd);
     window.addEventListener('touchend', onEnd);
 
+    // 桌面端 click 备用（跳过由触摸产生的 click）
     ball.addEventListener('click', (e) => {
-        const dx = Math.abs(e.clientX - startX);
-        const dy = Math.abs(e.clientY - startY);
-        if (dx > clickThreshold || dy > clickThreshold) return;
+        if (e.pointerType === 'touch') return;
+        if (hasMoved) return;
         toggleModal();
     });
 }
