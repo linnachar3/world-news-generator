@@ -1,4 +1,4 @@
-// main.js - 悬浮球插件，支持上下文读取、API 设置、内容生成（移动端优化版）
+// main.js - 悬浮球插件（含消息截断、移动端优化、社媒推荐流）
 (function() {
     let isDragging = false;
     let dragOffsetX = 0, dragOffsetY = 0;
@@ -62,7 +62,6 @@
         return count;
     }
 
-    // 统一聊天历史格式
     function getChatHistory() {
         const ctx = getLatestContext();
         if (!ctx || !ctx.chat || !Array.isArray(ctx.chat)) return [];
@@ -73,7 +72,13 @@
         }));
     }
 
-    // 获取角色和用户名
+    // 截断单条消息，防止超长文本撑爆 prompt
+    function truncateMessage(content, maxLength = 300) {
+        if (!content) return '';
+        if (content.length <= maxLength) return content;
+        return content.slice(0, maxLength) + '…';
+    }
+
     function getCharAndUser() {
         const ctx = getLatestContext();
         let charName = '未知角色';
@@ -90,16 +95,6 @@
     }
 
     // ========== UI 部分 ==========
-    function refreshDebugInfo() {
-        const ctx = getLatestContext();
-        if (!ctx) return;
-        const { charName, userName } = getCharAndUser();
-        const worldCount = getWorldInfoCount();
-        const chatHistory = getChatHistory();
-        const chatCount = chatHistory.length;
-        console.log('[悬浮球] 上下文信息', { charName, userName, worldCount, chatCount });
-    }
-
     function showModal() {
         if (!modalWindow) createModal();
         modalWindow.classList.remove('modal-hidden');
@@ -142,7 +137,6 @@
 
     // ========== 鲁棒 JSON 解析 ==========
     function robustJsonParse(rawContent) {
-        // 去除 BOM、首尾空白
         let text = rawContent.replace(/^\uFEFF/, '').trim();
 
         const extractStrategies = [
@@ -167,7 +161,6 @@
             try {
                 return JSON.parse(candidate);
             } catch {
-                // 尝试修复尾部逗号
                 try {
                     const fixed = candidate.replace(/,\s*([}\]])/g, '$1');
                     return JSON.parse(fixed);
@@ -186,7 +179,7 @@
         for (let i = 0; i <= retries; i++) {
             try {
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 15000); // 15秒超时
+                const timeoutId = setTimeout(() => controller.abort(), 15000);
 
                 const response = await fetch(`${config.apiBase}/chat/completions`, {
                     method: 'POST',
@@ -240,11 +233,13 @@
         throw lastError;
     }
 
-    // ========== 生成内容 ==========
+    // ========== 生成内容（含字符截断） ==========
     function buildWorldNewsPrompt() {
         const ctx = getLatestContext();
         const { charName, userName } = getCharAndUser();
-        const chatHistory = getChatHistory().slice(-6).map(m => `${m.name || m.role}: ${m.content}`).join('\n');
+        const chatHistory = getChatHistory().slice(-6).map(m =>
+            `${m.name || m.role}: ${truncateMessage(m.content, 200)}`
+        ).join('\n');
         
         const worldEntries = [];
         try {
@@ -268,7 +263,9 @@ ${styleInstruction}
     function buildLocalNewsPrompt() {
         const ctx = getLatestContext();
         const { charName } = getCharAndUser();
-        const chatHistory = getChatHistory().slice(-4).map(m => `${m.name || m.role}: ${m.content}`).join('\n');
+        const chatHistory = getChatHistory().slice(-4).map(m =>
+            `${m.name || m.role}: ${truncateMessage(m.content, 200)}`
+        ).join('\n');
         
         const worldEntries = [];
         try {
@@ -292,17 +289,17 @@ ${styleInstruction}
     function buildSocialMediaPrompt() {
         const ctx = getLatestContext();
         const { charName, userName } = getCharAndUser();
-        const chatHistory = getChatHistory().slice(-8);
-        
-        const messages = chatHistory.map(m => `${m.name || m.role}: ${m.content}`).join('\n');
+        const chatHistory = getChatHistory().slice(-8)
+            .map(m => `${m.name || m.role}: ${truncateMessage(m.content, 250)}`)
+            .join('\n');
 
         const styleInstruction = `请严格根据提供的世界观描述，推断故事的整体风格和语言特点，并在生成社交媒体帖子时完全使用该风格的文风。例如：中国古代江湖背景使用半文半白、简洁雅致的中文；西方奇幻使用翻译腔，带有欧美小说的句式；现代都市使用流畅口语或网络用语；科幻未来可带科技感。务必让读者能通过文字感受到这个世界的气氛。`;
 
-        const jsonExample = '[{"author":"角色名","content":"帖子内容","time":"时间","likes":0}]';
+        const jsonExample = '[{"author":"发帖人","content":"帖子内容","platform":"平台（如小红书/微博/朋友圈）","time":"发布时间","likes":0}]';
 
-        return `根据以下对话历史，模拟角色${charName}和用户${userName}在今天发的社交媒体帖子（4条，混合角色和用户）。你必须只回复一个纯JSON数组，格式严格为：${jsonExample}，不要包含任何 markdown 代码块标记，不要加解释文字。
+        return `假设${charName}正在刷社交媒体。请根据以下对话历史和世界观，生成4条可能会出现在${charName}首页推荐流中的帖子。这些帖子来自当前世界观里的其他用户（非${charName}和${userName}），内容要与他们的最近经历、所处环境或讨论过的话题高度相关，仿佛精准算法推荐。你必须只回复一个纯JSON数组，格式严格为：${jsonExample}，不要包含任何 markdown 代码块标记，不要加解释文字。
 ${styleInstruction}
-对话历史：${messages || '无'}`;
+对话历史：${chatHistory || '无'}`;
     }
 
     async function generateContent(tabId) {
@@ -358,7 +355,10 @@ ${styleInstruction}
         } else if (tabId === 'social') {
             contentDiv.innerHTML = data.map(post => `
                 <div class="social-post">
-                    <strong>${post.author}</strong>
+                    <div class="post-header">
+                        <strong>${post.author}</strong>
+                        <span class="platform-tag">${post.platform || '社交平台'}</span>
+                    </div>
                     <p>${post.content}</p>
                     <div class="social-meta">${post.time || '刚刚'} · ❤️ ${post.likes || 0} 赞</div>
                 </div>
@@ -682,11 +682,11 @@ ${styleInstruction}
         socialPanel.className = 'tab-panel';
         socialPanel.innerHTML = `
             <div class="social-feed">
-                <h2>@ 个人动态</h2>
+                <h2>@ 推荐动态</h2>
                 <div class="generated-content">
-                    <p class="placeholder">点击下方按钮生成社媒动态</p>
+                    <p class="placeholder">点击下方按钮生成推荐流</p>
                 </div>
-                <button class="generate-btn" data-tab="social">↻ 生成社媒动态</button>
+                <button class="generate-btn" data-tab="social">↻ 刷新推荐流</button>
             </div>
         `;
 
@@ -720,7 +720,7 @@ ${styleInstruction}
         if (!ball) return;
 
         let hasMoved = false;
-        let isBallTouch = false;   // 标记本次触摸是否始于悬浮球
+        let isBallTouch = false;
 
         const onStart = (e) => {
             isDragging = true;
@@ -756,7 +756,7 @@ ${styleInstruction}
         };
 
         const onEnd = (e) => {
-            if (!isBallTouch) return;   // 仅处理始于悬浮球的触摸
+            if (!isBallTouch) return;
             isDragging = false;
             isBallTouch = false;
             ball.style.cursor = 'grab';
@@ -772,7 +772,6 @@ ${styleInstruction}
         window.addEventListener('mouseup', onEnd);
         window.addEventListener('touchend', onEnd);
 
-        // 桌面端 click 备用（跳过触摸产生的 click）
         ball.addEventListener('click', (e) => {
             if (e.pointerType === 'touch') return;
             if (hasMoved) return;
