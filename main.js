@@ -1,4 +1,4 @@
-// main.js - 悬浮球插件，支持上下文读取、API 设置、内容生成
+// main.js - 悬浮球插件，支持上下文读取、API 设置、内容生成（移动端优化版）
 (function() {
     let isDragging = false;
     let dragOffsetX = 0, dragOffsetY = 0;
@@ -93,13 +93,10 @@
     function refreshDebugInfo() {
         const ctx = getLatestContext();
         if (!ctx) return;
-
         const { charName, userName } = getCharAndUser();
         const worldCount = getWorldInfoCount();
         const chatHistory = getChatHistory();
         const chatCount = chatHistory.length;
-
-        // 不再更新页面元素，仅控制台输出
         console.log('[悬浮球] 上下文信息', { charName, userName, worldCount, chatCount });
     }
 
@@ -143,73 +140,104 @@
         modalWindow.style.top = top + 'px';
     }
 
-    // ========== API 调用 ==========
-    async function callAI(promptText) {
-    const config = getConfig();
-    if (!config.apiKey) throw new Error('请先设置 API Key');
+    // ========== 鲁棒 JSON 解析 ==========
+    function robustJsonParse(rawContent) {
+        // 去除 BOM、首尾空白
+        let text = rawContent.replace(/^\uFEFF/, '').trim();
 
-    let response;
-    try {
-        response = await fetch(`${config.apiBase}/chat/completions`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${config.apiKey}`
+        const extractStrategies = [
+            () => {
+                const match = text.match(/```json\s*([\s\S]*?)\s*```/);
+                return match ? match[1].trim() : null;
             },
-            body: JSON.stringify({
-                model: config.model,
-                messages: [
-                    { role: 'system', content: '你是一个创意内容生成器。你必须只返回一个有效的JSON数组，不要有任何额外解释、标点或代码块。' },
-                    { role: 'user', content: promptText }   // ← 这一行是关键
-                ],
-                temperature: 0.8,
-                max_tokens: 2000
-            })
-        });
-    } catch (e) {
-        throw new Error(`网络请求失败：${e.message}。请检查 API 地址或网络连接。`);
-    }
+            () => {
+                const match = text.match(/\[\s*\{[\s\S]*?\}\s*\]/);
+                return match ? match[0] : null;
+            },
+            () => {
+                const match = text.match(/\{\s*"[\s\S]*?\}\s*\}/);
+                return match ? match[0] : null;
+            },
+            () => text
+        ];
 
-    if (!response.ok) {
-        let errorMsg = `API 返回错误 ${response.status}`;
-        try {
-            const errBody = await response.json();
-            if (errBody.error?.message) errorMsg = errBody.error.message;
-        } catch {}
-        throw new Error(errorMsg);
-    }
-
-    const data = await response.json();
-    if (!data.choices || !data.choices[0]?.message?.content) {
-        throw new Error('API 返回格式异常，未找到生成内容');
-    }
-
-    const rawContent = data.choices[0].message.content.trim();
-    console.log('[悬浮球] AI 原始返回:', rawContent);
-
-        let jsonStr = null;
-        const codeBlockMatch = rawContent.match(/```json\s*([\s\S]*?)\s*```/);
-        if (codeBlockMatch) jsonStr = codeBlockMatch[1].trim();
-        
-        if (!jsonStr) {
-            const arrayMatch = rawContent.match(/\[\s*\{[\s\S]*?\}\s*\]/);
-            const objMatch = rawContent.match(/\{\s*"[\s\S]*?\}\s*\}/);
-            jsonStr = arrayMatch ? arrayMatch[0] : (objMatch ? objMatch[0] : null);
-        }
-
-        if (!jsonStr) jsonStr = rawContent;
-
-        try {
-            return JSON.parse(jsonStr);
-        } catch (e) {
-            console.error('[悬浮球] JSON 解析失败，原始内容:', rawContent);
+        for (const strategy of extractStrategies) {
+            const candidate = strategy();
+            if (!candidate) continue;
             try {
-                const fixed = jsonStr.replace(/,\s*([}\]])/g, '$1');
-                return JSON.parse(fixed);
-            } catch (e2) {
-                throw new Error(`JSON解析失败。AI返回内容预览：${rawContent.substring(0, 300)}...`);
+                return JSON.parse(candidate);
+            } catch {
+                // 尝试修复尾部逗号
+                try {
+                    const fixed = candidate.replace(/,\s*([}\]])/g, '$1');
+                    return JSON.parse(fixed);
+                } catch {}
             }
         }
+        throw new Error(`无法解析 JSON，原始内容预览：${text.substring(0, 300)}`);
+    }
+
+    // ========== API 调用（带重试与超时） ==========
+    async function callAI(promptText, retries = 2) {
+        const config = getConfig();
+        if (!config.apiKey) throw new Error('请先设置 API Key');
+
+        let lastError;
+        for (let i = 0; i <= retries; i++) {
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 15000); // 15秒超时
+
+                const response = await fetch(`${config.apiBase}/chat/completions`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${config.apiKey}`
+                    },
+                    body: JSON.stringify({
+                        model: config.model,
+                        messages: [
+                            { role: 'system', content: '你是一个创意内容生成器。你必须只返回一个有效的JSON数组，不要有任何额外解释、标点或代码块。' },
+                            { role: 'user', content: promptText }
+                        ],
+                        temperature: 0.8,
+                        max_tokens: 2000
+                    }),
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+
+                if (!response.ok) {
+                    let errorMsg = `API 返回错误 ${response.status}`;
+                    try {
+                        const errBody = await response.json();
+                        if (errBody.error?.message) errorMsg = errBody.error.message;
+                    } catch {}
+                    throw new Error(errorMsg);
+                }
+
+                const data = await response.json();
+                if (!data.choices?.[0]?.message?.content) {
+                    throw new Error('API 返回格式异常，未找到生成内容');
+                }
+
+                const rawContent = data.choices[0].message.content.trim();
+                console.log('[悬浮球] AI 原始返回:', rawContent);
+
+                return robustJsonParse(rawContent);
+
+            } catch (e) {
+                lastError = e;
+                if (e.name === 'AbortError') {
+                    lastError = new Error('请求超时，请检查网络');
+                }
+                console.warn(`[悬浮球] 第 ${i + 1} 次尝试失败`, e);
+                if (i < retries) {
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+            }
+        }
+        throw lastError;
     }
 
     // ========== 生成内容 ==========
@@ -228,7 +256,9 @@
 
         const styleInstruction = `请严格根据提供的世界观描述，推断故事的整体风格和语言特点，并在生成新闻时完全使用该风格的文风。例如：中国古代江湖背景使用半文半白、简洁雅致的中文；西方奇幻使用翻译腔，带有欧美小说的句式；现代都市使用流畅口语或新闻报道体；科幻未来可带科技感。务必让读者能通过文字感受到这个世界的气氛。`;
 
-        return `基于以下世界观和最近聊天记录，生成三条今日《世界报》头条新闻（JSON数组，每项包含title、summary、source字段）。
+        const jsonExample = '[{"title":"示例标题","summary":"示例摘要","source":"示例来源"}]';
+
+        return `基于以下世界观和最近聊天记录，生成三条今日《世界报》头条新闻。你必须只回复一个纯JSON数组，格式严格为：${jsonExample}，不要包含任何 markdown 代码块标记，不要加解释文字。
 ${styleInstruction}
 世界观条目：${worldEntries.join('; ') || '无特殊设定'}
 角色：${charName}，用户：${userName}
@@ -250,7 +280,9 @@ ${styleInstruction}
 
         const styleInstruction = `请严格根据提供的世界观描述，推断故事的整体风格和语言特点，并在生成本地新闻时完全使用该风格的文风。例如：中国古代江湖背景使用半文半白、简洁雅致的中文；西方奇幻使用翻译腔，带有欧美小说的句式；现代都市使用流畅口语或新闻报道体；科幻未来可带科技感。务必让读者能通过文字感受到这个世界的气氛。`;
 
-        return `基于当前角色所在地区和环境，生成三条本地新闻（JSON数组，每项包含title、content、location字段）。
+        const jsonExample = '[{"title":"示例标题","content":"示例内容","location":"示例地点"}]';
+
+        return `基于当前角色所在地区和环境，生成三条本地新闻。你必须只回复一个纯JSON数组，格式严格为：${jsonExample}，不要包含任何 markdown 代码块标记，不要加解释文字。
 ${styleInstruction}
 世界观：${worldEntries.join('; ') || '无特殊设定'}
 角色：${charName}
@@ -266,7 +298,9 @@ ${styleInstruction}
 
         const styleInstruction = `请严格根据提供的世界观描述，推断故事的整体风格和语言特点，并在生成社交媒体帖子时完全使用该风格的文风。例如：中国古代江湖背景使用半文半白、简洁雅致的中文；西方奇幻使用翻译腔，带有欧美小说的句式；现代都市使用流畅口语或网络用语；科幻未来可带科技感。务必让读者能通过文字感受到这个世界的气氛。`;
 
-        return `根据以下对话历史，模拟角色${charName}和用户${userName}在今天发的社交媒体帖子（4条，混合角色和用户，JSON数组，每项包含author、content、time、likes字段）。
+        const jsonExample = '[{"author":"角色名","content":"帖子内容","time":"时间","likes":0}]';
+
+        return `根据以下对话历史，模拟角色${charName}和用户${userName}在今天发的社交媒体帖子（4条，混合角色和用户）。你必须只回复一个纯JSON数组，格式严格为：${jsonExample}，不要包含任何 markdown 代码块标记，不要加解释文字。
 ${styleInstruction}
 对话历史：${messages || '无'}`;
     }
@@ -405,7 +439,6 @@ ${styleInstruction}
         const fetchBtn = document.getElementById('fetch-models-btn');
         const statusEl = document.getElementById('fetch-status');
 
-        // 填充设置面板中的系统信息
         const updateSettingsContextInfo = () => {
             const infoDiv = document.getElementById('settings-context-info');
             if (!infoDiv) return;
@@ -418,7 +451,6 @@ ${styleInstruction}
         updateSettingsContextInfo();
         document.querySelector('.sys-info-toggle').addEventListener('toggle', updateSettingsContextInfo);
 
-        // 获取模型列表
         fetchBtn.addEventListener('click', async () => {
             const baseUrl = document.getElementById('api-base').value.trim();
             const apiKey = document.getElementById('api-key').value.trim();
@@ -504,7 +536,6 @@ ${styleInstruction}
         };
     }
 
-    // 辅助：转义 HTML 防止 XSS
     function escapeHtml(text) {
         const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
         return String(text).replace(/[&<>"']/g, m => map[m]);
@@ -528,7 +559,7 @@ ${styleInstruction}
         const actionsDiv = document.createElement('div');
         
         const settingsBtn = document.createElement('button');
-        settingsBtn.innerHTML = '𖥕';   // 齿轮状符号
+        settingsBtn.innerHTML = '𖥕';
         settingsBtn.className = 'modal-icon-btn';
         settingsBtn.title = '设置';
         settingsBtn.onclick = openSettings;
@@ -547,55 +578,55 @@ ${styleInstruction}
         let modalDragStartX = 0, modalDragStartY = 0;
         let modalStartLeft = 0, modalStartTop = 0;
         const onTitleStart = (e) => {
-    if (e.target === closeBtn || e.target === settingsBtn) return;
-    isModalDragging = true;
-    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-    modalDragStartX = clientX;
-    modalDragStartY = clientY;
-    modalStartLeft = parseFloat(modal.style.left);
-    modalStartTop = parseFloat(modal.style.top);
-    if (isNaN(modalStartLeft)) modalStartLeft = (window.innerWidth - modal.offsetWidth) / 2;
-    if (isNaN(modalStartTop)) modalStartTop = (window.innerHeight - modal.offsetHeight) / 2;
-    modal.style.cursor = 'move';
-    e.preventDefault();
-};
+            if (e.target === closeBtn || e.target === settingsBtn) return;
+            isModalDragging = true;
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            modalDragStartX = clientX;
+            modalDragStartY = clientY;
+            modalStartLeft = parseFloat(modal.style.left);
+            modalStartTop = parseFloat(modal.style.top);
+            if (isNaN(modalStartLeft)) modalStartLeft = (window.innerWidth - modal.offsetWidth) / 2;
+            if (isNaN(modalStartTop)) modalStartTop = (window.innerHeight - modal.offsetHeight) / 2;
+            modal.style.cursor = 'move';
+            e.preventDefault();
+        };
 
-const onTitleMove = (e) => {
-    if (!isModalDragging) return;
-    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-    const dx = clientX - modalDragStartX;
-    const dy = clientY - modalDragStartY;
-    let newLeft = modalStartLeft + dx;
-    let newTop = modalStartTop + dy;
-    const maxX = window.innerWidth - modal.offsetWidth;
-    const maxY = window.innerHeight - modal.offsetHeight;
-    newLeft = Math.min(Math.max(0, newLeft), maxX);
-    newTop = Math.min(Math.max(0, newTop), maxY);
-    modal.style.left = newLeft + 'px';
-    modal.style.top = newTop + 'px';
-    e.preventDefault();
-};
+        const onTitleMove = (e) => {
+            if (!isModalDragging) return;
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            const dx = clientX - modalDragStartX;
+            const dy = clientY - modalDragStartY;
+            let newLeft = modalStartLeft + dx;
+            let newTop = modalStartTop + dy;
+            const maxX = window.innerWidth - modal.offsetWidth;
+            const maxY = window.innerHeight - modal.offsetHeight;
+            newLeft = Math.min(Math.max(0, newLeft), maxX);
+            newTop = Math.min(Math.max(0, newTop), maxY);
+            modal.style.left = newLeft + 'px';
+            modal.style.top = newTop + 'px';
+            e.preventDefault();
+        };
 
-const onTitleEnd = () => {
-    if (isModalDragging) {
-        isModalDragging = false;
-        modal.style.cursor = '';
-    }
-};
+        const onTitleEnd = () => {
+            if (isModalDragging) {
+                isModalDragging = false;
+                modal.style.cursor = '';
+            }
+        };
 
-titleBar.addEventListener('mousedown', onTitleStart);
-titleBar.addEventListener('touchstart', onTitleStart, { passive: false });
-window.addEventListener('mousemove', onTitleMove);
-window.addEventListener('touchmove', onTitleMove, { passive: false });
-window.addEventListener('mouseup', onTitleEnd);
-window.addEventListener('touchend', onTitleEnd);
+        titleBar.addEventListener('mousedown', onTitleStart);
+        titleBar.addEventListener('touchstart', onTitleStart, { passive: false });
+        window.addEventListener('mousemove', onTitleMove);
+        window.addEventListener('touchmove', onTitleMove, { passive: false });
+        window.addEventListener('mouseup', onTitleEnd);
+        window.addEventListener('touchend', onTitleEnd);
 
         const tabsHeader = document.createElement('div');
         tabsHeader.className = 'modal-tabs';
         const tabsConfig = [
-            { id: 'world', title: '✦ 世界新闻', active: true },
+            { id: 'world', title: '♁ 世界新闻', active: true },
             { id: 'local', title: '⌂ 本地新闻', active: false },
             { id: 'social', title: '@ 个人社媒', active: false }
         ];
@@ -625,7 +656,7 @@ window.addEventListener('touchend', onTitleEnd);
         worldPanel.className = 'tab-panel active';
         worldPanel.innerHTML = `
             <div class="news-paper">
-                <h2>✦ 世界新闻</h2>
+                <h2>♁ 世界新闻</h2>
                 <div class="generated-content">
                     <p class="placeholder">点击下方按钮生成新闻</p>
                 </div>
@@ -683,71 +714,71 @@ window.addEventListener('touchend', onTitleEnd);
         return modal;
     }
 
-    // ========== 悬浮球 ==========
+    // ========== 悬浮球（移动端触摸修复） ==========
     function initFloatingBall() {
-    const ball = document.getElementById('my-floating-ball');
-    if (!ball) return;
+        const ball = document.getElementById('my-floating-ball');
+        if (!ball) return;
 
-    let hasMoved = false;
-    let isBallTouch = false;   // ← 新增标志，标识当前触摸序列是否始于悬浮球
+        let hasMoved = false;
+        let isBallTouch = false;   // 标记本次触摸是否始于悬浮球
 
-    const onStart = (e) => {
-        isDragging = true;
-        hasMoved = false;
-        isBallTouch = true;    // ← 标记本次触摸与悬浮球相关
-        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-        const rect = ball.getBoundingClientRect();
-        dragOffsetX = clientX - rect.left;
-        dragOffsetY = clientY - rect.top;
-        ball.style.cursor = 'grabbing';
-        startX = clientX;
-        startY = clientY;
-        e.preventDefault();
-    };
+        const onStart = (e) => {
+            isDragging = true;
+            hasMoved = false;
+            isBallTouch = true;
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            const rect = ball.getBoundingClientRect();
+            dragOffsetX = clientX - rect.left;
+            dragOffsetY = clientY - rect.top;
+            ball.style.cursor = 'grabbing';
+            startX = clientX;
+            startY = clientY;
+            e.preventDefault();
+        };
 
-    const onMove = (e) => {
-        if (!isDragging) return;
-        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-        const dx = clientX - startX;
-        const dy = clientY - startY;
-        if (Math.abs(dx) > clickThreshold || Math.abs(dy) > clickThreshold) {
-            hasMoved = true;
-        }
-        let left = clientX - dragOffsetX;
-        let top = clientY - dragOffsetY;
-        left = Math.min(Math.max(0, left), window.innerWidth - ball.offsetWidth);
-        top = Math.min(Math.max(0, top), window.innerHeight - ball.offsetHeight);
-        ball.style.left = left + 'px';
-        ball.style.top = top + 'px';
-        e.preventDefault();
-    };
+        const onMove = (e) => {
+            if (!isDragging) return;
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            const dx = clientX - startX;
+            const dy = clientY - startY;
+            if (Math.abs(dx) > clickThreshold || Math.abs(dy) > clickThreshold) {
+                hasMoved = true;
+            }
+            let left = clientX - dragOffsetX;
+            let top = clientY - dragOffsetY;
+            left = Math.min(Math.max(0, left), window.innerWidth - ball.offsetWidth);
+            top = Math.min(Math.max(0, top), window.innerHeight - ball.offsetHeight);
+            ball.style.left = left + 'px';
+            ball.style.top = top + 'px';
+            e.preventDefault();
+        };
 
-    const onEnd = (e) => {
-        if (!isBallTouch) return;   // ← 仅处理始于悬浮球的触摸结束
-        isDragging = false;
-        isBallTouch = false;        // ← 重置标志
-        ball.style.cursor = 'grab';
-        if (e.type === 'touchend' && !hasMoved) {
+        const onEnd = (e) => {
+            if (!isBallTouch) return;   // 仅处理始于悬浮球的触摸
+            isDragging = false;
+            isBallTouch = false;
+            ball.style.cursor = 'grab';
+            if (e.type === 'touchend' && !hasMoved) {
+                toggleModal();
+            }
+        };
+
+        ball.addEventListener('mousedown', onStart);
+        ball.addEventListener('touchstart', onStart, { passive: false });
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('touchmove', onMove, { passive: false });
+        window.addEventListener('mouseup', onEnd);
+        window.addEventListener('touchend', onEnd);
+
+        // 桌面端 click 备用（跳过触摸产生的 click）
+        ball.addEventListener('click', (e) => {
+            if (e.pointerType === 'touch') return;
+            if (hasMoved) return;
             toggleModal();
-        }
-    };
-
-    ball.addEventListener('mousedown', onStart);
-    ball.addEventListener('touchstart', onStart, { passive: false });
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('touchmove', onMove, { passive: false });
-    window.addEventListener('mouseup', onEnd);
-    window.addEventListener('touchend', onEnd);
-
-    // 桌面端 click 备用（跳过由触摸产生的 click）
-    ball.addEventListener('click', (e) => {
-        if (e.pointerType === 'touch') return;
-        if (hasMoved) return;
-        toggleModal();
-    });
-}
+        });
+    }
 
     function constrainBallPosition(ball) {
         const maxX = window.innerWidth - ball.offsetWidth;
