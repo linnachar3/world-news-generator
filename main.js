@@ -626,7 +626,7 @@ ${styleInstruction}
         const tabsHeader = document.createElement('div');
         tabsHeader.className = 'modal-tabs';
         const tabsConfig = [
-            { id: 'world', title: '♁ 世界新闻', active: true },
+            { id: 'world', title: '✦ 世界新闻', active: true },
             { id: 'local', title: '⌂ 本地新闻', active: false },
             { id: 'social', title: '@ 个人社媒', active: false }
         ];
@@ -656,7 +656,7 @@ ${styleInstruction}
         worldPanel.className = 'tab-panel active';
         worldPanel.innerHTML = `
             <div class="news-paper">
-                <h2>♁ 世界新闻</h2>
+                <h2>✦ 世界新闻</h2>
                 <div class="generated-content">
                     <p class="placeholder">点击下方按钮生成新闻</p>
                 </div>
