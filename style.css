@@ -242,6 +242,15 @@
     border-top: 1px dotted var(--border);
     padding-top: 6px;
 }
+.platform-tag {
+    font-style: italic;
+    color: var(--accent);          /* 使用主题中的点缀色 #c94b2f */
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    margin-left: 6px;
+    font-weight: 400;
+    font-size: 0.9em;
+}
 
 /* ===== 设置面板 ===== */
 .settings-overlay {
