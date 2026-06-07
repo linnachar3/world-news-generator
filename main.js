@@ -145,47 +145,47 @@
 
     // ========== API 调用 ==========
     async function callAI(promptText) {
-        const config = getConfig();
-        if (!config.apiKey) throw new Error('请先设置 API Key');
+    const config = getConfig();
+    if (!config.apiKey) throw new Error('请先设置 API Key');
 
-        let response;
+    let response;
+    try {
+        response = await fetch(`${config.apiBase}/chat/completions`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${config.apiKey}`
+            },
+            body: JSON.stringify({
+                model: config.model,
+                messages: [
+                    { role: 'system', content: '你是一个创意内容生成器。你必须只返回一个有效的JSON数组，不要有任何额外解释、标点或代码块。' },
+                    { role: 'user', content: promptText }   // ← 这一行是关键
+                ],
+                temperature: 0.8,
+                max_tokens: 2000
+            })
+        });
+    } catch (e) {
+        throw new Error(`网络请求失败：${e.message}。请检查 API 地址或网络连接。`);
+    }
+
+    if (!response.ok) {
+        let errorMsg = `API 返回错误 ${response.status}`;
         try {
-            response = await fetch(`${config.apiBase}/chat/completions`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${config.apiKey}`
-                },
-                body: JSON.stringify({
-                    model: config.model,
-                    messages: [
-                        { role: 'system', content: '你是一个创意内容生成器。严格按照用户要求的JSON格式输出，不要包含其他文字。' },
-                        { role: 'user', content: promptText }
-                    ],
-                    temperature: 0.8,
-                    max_tokens: 2000
-                })
-            });
-        } catch (e) {
-            throw new Error(`网络请求失败：${e.message}。请检查 API 地址或网络连接。`);
-        }
+            const errBody = await response.json();
+            if (errBody.error?.message) errorMsg = errBody.error.message;
+        } catch {}
+        throw new Error(errorMsg);
+    }
 
-        if (!response.ok) {
-            let errorMsg = `API 返回错误 ${response.status}`;
-            try {
-                const errBody = await response.json();
-                if (errBody.error?.message) errorMsg = errBody.error.message;
-            } catch {}
-            throw new Error(errorMsg);
-        }
+    const data = await response.json();
+    if (!data.choices || !data.choices[0]?.message?.content) {
+        throw new Error('API 返回格式异常，未找到生成内容');
+    }
 
-        const data = await response.json();
-        if (!data.choices || !data.choices[0]?.message?.content) {
-            throw new Error('API 返回格式异常，未找到生成内容');
-        }
-
-        const rawContent = data.choices[0].message.content.trim();
-        console.log('[悬浮球] AI 原始返回:', rawContent);
+    const rawContent = data.choices[0].message.content.trim();
+    console.log('[悬浮球] AI 原始返回:', rawContent);
 
         let jsonStr = null;
         const codeBlockMatch = rawContent.match(/```json\s*([\s\S]*?)\s*```/);
@@ -546,37 +546,51 @@ ${styleInstruction}
         let isModalDragging = false;
         let modalDragStartX = 0, modalDragStartY = 0;
         let modalStartLeft = 0, modalStartTop = 0;
-        titleBar.addEventListener('mousedown', (e) => {
-            if (e.target === closeBtn || e.target === settingsBtn) return;
-            isModalDragging = true;
-            modalDragStartX = e.clientX;
-            modalDragStartY = e.clientY;
-            modalStartLeft = parseFloat(modal.style.left);
-            modalStartTop = parseFloat(modal.style.top);
-            if (isNaN(modalStartLeft)) modalStartLeft = (window.innerWidth - modal.offsetWidth) / 2;
-            if (isNaN(modalStartTop)) modalStartTop = (window.innerHeight - modal.offsetHeight) / 2;
-            modal.style.cursor = 'move';
-            e.preventDefault();
-        });
-        window.addEventListener('mousemove', (e) => {
-            if (!isModalDragging) return;
-            const dx = e.clientX - modalDragStartX;
-            const dy = e.clientY - modalDragStartY;
-            let newLeft = modalStartLeft + dx;
-            let newTop = modalStartTop + dy;
-            const maxX = window.innerWidth - modal.offsetWidth;
-            const maxY = window.innerHeight - modal.offsetHeight;
-            newLeft = Math.min(Math.max(0, newLeft), maxX);
-            newTop = Math.min(Math.max(0, newTop), maxY);
-            modal.style.left = newLeft + 'px';
-            modal.style.top = newTop + 'px';
-        });
-        window.addEventListener('mouseup', () => {
-            if (isModalDragging) {
-                isModalDragging = false;
-                modal.style.cursor = '';
-            }
-        });
+        const onTitleStart = (e) => {
+    if (e.target === closeBtn || e.target === settingsBtn) return;
+    isModalDragging = true;
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    modalDragStartX = clientX;
+    modalDragStartY = clientY;
+    modalStartLeft = parseFloat(modal.style.left);
+    modalStartTop = parseFloat(modal.style.top);
+    if (isNaN(modalStartLeft)) modalStartLeft = (window.innerWidth - modal.offsetWidth) / 2;
+    if (isNaN(modalStartTop)) modalStartTop = (window.innerHeight - modal.offsetHeight) / 2;
+    modal.style.cursor = 'move';
+    e.preventDefault();
+};
+
+const onTitleMove = (e) => {
+    if (!isModalDragging) return;
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    const dx = clientX - modalDragStartX;
+    const dy = clientY - modalDragStartY;
+    let newLeft = modalStartLeft + dx;
+    let newTop = modalStartTop + dy;
+    const maxX = window.innerWidth - modal.offsetWidth;
+    const maxY = window.innerHeight - modal.offsetHeight;
+    newLeft = Math.min(Math.max(0, newLeft), maxX);
+    newTop = Math.min(Math.max(0, newTop), maxY);
+    modal.style.left = newLeft + 'px';
+    modal.style.top = newTop + 'px';
+    e.preventDefault();
+};
+
+const onTitleEnd = () => {
+    if (isModalDragging) {
+        isModalDragging = false;
+        modal.style.cursor = '';
+    }
+};
+
+titleBar.addEventListener('mousedown', onTitleStart);
+titleBar.addEventListener('touchstart', onTitleStart, { passive: false });
+window.addEventListener('mousemove', onTitleMove);
+window.addEventListener('touchmove', onTitleMove, { passive: false });
+window.addEventListener('mouseup', onTitleEnd);
+window.addEventListener('touchend', onTitleEnd);
 
         const tabsHeader = document.createElement('div');
         tabsHeader.className = 'modal-tabs';
@@ -671,42 +685,54 @@ ${styleInstruction}
 
     // ========== 悬浮球 ==========
     function initFloatingBall() {
-        const ball = document.getElementById('my-floating-ball');
-        if (!ball) return;
+    const ball = document.getElementById('my-floating-ball');
+    if (!ball) return;
 
-        ball.addEventListener('mousedown', (e) => {
-            isDragging = true;
-            const rect = ball.getBoundingClientRect();
-            dragOffsetX = e.clientX - rect.left;
-            dragOffsetY = e.clientY - rect.top;
-            ball.style.cursor = 'grabbing';
-            startX = e.clientX;
-            startY = e.clientY;
-            e.preventDefault();
-        });
+    const onStart = (e) => {
+        isDragging = true;
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        const rect = ball.getBoundingClientRect();
+        dragOffsetX = clientX - rect.left;
+        dragOffsetY = clientY - rect.top;
+        ball.style.cursor = 'grabbing';
+        startX = clientX;
+        startY = clientY;
+        e.preventDefault();
+    };
 
-        window.addEventListener('mousemove', (e) => {
-            if (!isDragging) return;
-            let left = e.clientX - dragOffsetX;
-            let top = e.clientY - dragOffsetY;
-            left = Math.min(Math.max(0, left), window.innerWidth - ball.offsetWidth);
-            top = Math.min(Math.max(0, top), window.innerHeight - ball.offsetHeight);
-            ball.style.left = left + 'px';
-            ball.style.top = top + 'px';
-        });
+    const onMove = (e) => {
+        if (!isDragging) return;
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        let left = clientX - dragOffsetX;
+        let top = clientY - dragOffsetY;
+        left = Math.min(Math.max(0, left), window.innerWidth - ball.offsetWidth);
+        top = Math.min(Math.max(0, top), window.innerHeight - ball.offsetHeight);
+        ball.style.left = left + 'px';
+        ball.style.top = top + 'px';
+        e.preventDefault();
+    };
 
-        window.addEventListener('mouseup', () => {
-            isDragging = false;
-            ball.style.cursor = 'grab';
-        });
+    const onEnd = () => {
+        isDragging = false;
+        ball.style.cursor = 'grab';
+    };
 
-        ball.addEventListener('click', (e) => {
-            const dx = Math.abs(e.clientX - startX);
-            const dy = Math.abs(e.clientY - startY);
-            if (dx > clickThreshold || dy > clickThreshold) return;
-            toggleModal();
-        });
-    }
+    ball.addEventListener('mousedown', onStart);
+    ball.addEventListener('touchstart', onStart, { passive: false });
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('touchmove', onMove, { passive: false });
+    window.addEventListener('mouseup', onEnd);
+    window.addEventListener('touchend', onEnd);
+
+    ball.addEventListener('click', (e) => {
+        const dx = Math.abs(e.clientX - startX);
+        const dy = Math.abs(e.clientY - startY);
+        if (dx > clickThreshold || dy > clickThreshold) return;
+        toggleModal();
+    });
+}
 
     function constrainBallPosition(ball) {
         const maxX = window.innerWidth - ball.offsetWidth;
