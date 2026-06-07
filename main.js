@@ -595,7 +595,7 @@ window.addEventListener('touchend', onTitleEnd);
         const tabsHeader = document.createElement('div');
         tabsHeader.className = 'modal-tabs';
         const tabsConfig = [
-            { id: 'world', title: '♁ 世界新闻', active: true },
+            { id: 'world', title: '✦ 世界新闻', active: true },
             { id: 'local', title: '⌂ 本地新闻', active: false },
             { id: 'social', title: '@ 个人社媒', active: false }
         ];
@@ -625,7 +625,7 @@ window.addEventListener('touchend', onTitleEnd);
         worldPanel.className = 'tab-panel active';
         worldPanel.innerHTML = `
             <div class="news-paper">
-                <h2>♁ 世界新闻</h2>
+                <h2>✦ 世界新闻</h2>
                 <div class="generated-content">
                     <p class="placeholder">点击下方按钮生成新闻</p>
                 </div>
@@ -688,11 +688,13 @@ window.addEventListener('touchend', onTitleEnd);
     const ball = document.getElementById('my-floating-ball');
     if (!ball) return;
 
-    let hasMoved = false; // 标记本次触摸是否移动过
+    let hasMoved = false;
+    let isBallTouch = false;   // ← 新增标志，标识当前触摸序列是否始于悬浮球
 
     const onStart = (e) => {
         isDragging = true;
         hasMoved = false;
+        isBallTouch = true;    // ← 标记本次触摸与悬浮球相关
         const clientX = e.touches ? e.touches[0].clientX : e.clientX;
         const clientY = e.touches ? e.touches[0].clientY : e.clientY;
         const rect = ball.getBoundingClientRect();
@@ -723,9 +725,10 @@ window.addEventListener('touchend', onTitleEnd);
     };
 
     const onEnd = (e) => {
+        if (!isBallTouch) return;   // ← 仅处理始于悬浮球的触摸结束
         isDragging = false;
+        isBallTouch = false;        // ← 重置标志
         ball.style.cursor = 'grab';
-        // 触摸结束且未移动：视为轻击
         if (e.type === 'touchend' && !hasMoved) {
             toggleModal();
         }
